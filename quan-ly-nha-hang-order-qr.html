@@ -653,6 +653,7 @@
       [1046.5, 1318.5].forEach((f, i) => tone(f, t0 + i * 0.18, 0.4, 0.2));
     }
     function speakVI(text){
+      window.__speechLog = window.__speechLog || []; window.__speechLog.push(text); /* nhật ký câu đọc — phục vụ kiểm chứng nội dung đọc */
       if(!('speechSynthesis' in window)) return;
       try{
         const u = new SpeechSynthesisUtterance(text);
@@ -663,6 +664,42 @@
         speechSynthesis.speak(u);
       }catch(e){}
     }
+    /* Liệt kê từng món để đọc: "Tên món: X phần." (+ ghi chú riêng nếu có); tối đa 8 món, còn lại gộp "và X món khác" */
+    function itemsSpeechText(items){
+      const lines = items.slice(0, 8).map(it => {
+        let s = menuById(it.mid).name + ': ' + it.qty + ' phần';
+        if(it.note) s += ', ghi chú: ' + it.note;
+        return s + '.';
+      });
+      if(items.length > 8) lines.push('và ' + (items.length - 8) + ' món khác.');
+      return lines.join(' ');
+    }
+    /* Tổng hợp các món đang CHỜ chưa nhận nấu (st 'cho') trên mọi đơn đang phục vụ, gộp theo món + món chờ lâu nhất */
+    function pendingSpeechText(){
+      const os = activeOrders().filter(o => o.items.some(i => i.st === 'cho')).sort((a, b) => a.at - b.at);
+      const byDish = new Map(); let total = 0;
+      os.forEach(o => o.items.forEach(it => { if(it.st !== 'cho') return; total += it.qty; byDish.set(it.mid, (byDish.get(it.mid) || 0) + it.qty); }));
+      if(!total) return 'Hiện không có món nào đang chờ.';
+      const names = [...byDish.entries()];
+      const lines = names.slice(0, 8).map(([mid, q]) => menuById(mid).name + ': ' + q + ' phần.');
+      if(names.length > 8) lines.push('và ' + (names.length - 8) + ' món khác.');
+      const oldest = os[0];
+      const firstWait = oldest.items.find(i => i.st === 'cho');
+      const mins = Math.floor((Date.now() - oldest.at) / MIN);
+      return 'Bếp đang có ' + total + ' món chờ chưa làm. ' + lines.join(' ') +
+        ' Món chờ lâu nhất là ' + menuById(firstWait.mid).name + ' của ' + oldest.table.replace('B', 'Bàn ') + (mins >= 1 ? ', đã chờ ' + mins + ' phút.' : ', vừa mới vào bếp.');
+    }
+    function readPending(auto){ /* nút bấm = đọc ngay; tự động = chuông ngắn trước rồi đọc, chỉ khi âm thanh đang BẬT */
+      if(auto && !soundOn) return;
+      unlockAudio();
+      if(auto) playShortChime();
+      setTimeout(() => speakVI(pendingSpeechText()), auto ? 450 : 0);
+    }
+    /* TỰ ĐỘNG NHẮC MÓN TỒN: mỗi 3 phút, còn món chờ chưa nhận nấu + âm thanh BẬT → chuông ngắn + đọc lại danh sách chờ; hết món chờ thì tự im */
+    setInterval(() => {
+      if(!soundOn) return;
+      if(activeOrders().some(o => o.items.some(i => i.st === 'cho'))) readPending(true);
+    }, 3 * MIN);
     function announceNewOrder(o){
       newOrderIds.add(o.id);
       const count = o.items.reduce((s, i) => s + i.qty, 0);
@@ -673,8 +710,8 @@
       if(!soundOn) return;
       unlockAudio();
       playChime();
-      let msg = 'Có đơn mới từ ' + o.table.replace('B', 'Bàn ') + '. Tổng cộng ' + count + ' món. Mời bếp chuẩn bị.';
-      if(o.note) msg += ' Có ghi chú: ' + o.note.slice(0, 80) + '.';
+      let msg = 'Có đơn mới từ ' + o.table.replace('B', 'Bàn ') + '. ' + itemsSpeechText(o.items) + ' Mời bếp chuẩn bị.';
+      if(o.note) msg += ' Có ghi chú cả đơn: ' + o.note.slice(0, 80) + '.';
       setTimeout(() => speakVI(msg), 800); /* đọc sau khi chuông ting xong */
     }
     function announceCall(tid, kindText){
@@ -687,7 +724,7 @@
       unlockAudio();
       if(!soundOn){ soundOn = true; renderSoundBtn(); if(curView === 'bep') renderView(); }
       playChime();
-      setTimeout(() => speakVI('Nghe thử. Có đơn mới từ Bàn 05. Tổng cộng 3 món. Mời bếp chuẩn bị.'), 800);
+      setTimeout(() => speakVI('Nghe thử. Có đơn mới từ Bàn 05. Phở bò tái nạm: 2 phần. Trà đào cam sả: 1 phần. Mời bếp chuẩn bị.'), 800);
       toast('Đang phát thử: chuông báo đơn + giọng đọc cho bếp nghe');
     }
     function renderSoundBtn(){
@@ -700,9 +737,10 @@
       return '<div class="toolbar">' +
         '<div class="panel" style="display:flex;align-items:center;gap:11px;padding:10px 14px;flex:1;min-width:250px">' +
           '<span style="color:' + (soundOn ? 'var(--green)' : 'var(--red)') + ';display:flex">' + (soundOn ? IC.vol : IC.volx) + '</span>' +
-          '<div style="flex:1;min-width:0"><b style="font-size:14px">Âm thanh báo đơn cho bếp: ' + (soundOn ? 'ĐANG BẬT' : 'ĐANG TẮT') + '</b><div style="font-size:12.5px;color:var(--muted)">Đơn mới sẽ kêu chuông “ting ting ting” rồi đọc to số bàn + số món cho bếp. Trình duyệt chỉ cho phát tiếng sau lần chạm đầu tiên vào app.</div></div>' +
+          '<div style="flex:1;min-width:0"><b style="font-size:14px">Âm thanh báo đơn cho bếp: ' + (soundOn ? 'ĐANG BẬT' : 'ĐANG TẮT') + '</b><div style="font-size:12.5px;color:var(--muted)">Đơn mới sẽ kêu chuông “ting ting ting” rồi đọc to tên từng món kèm số lượng cho bếp. Món nào còn chờ chưa nhận nấu, cứ 3 phút bếp sẽ tự nhắc lại một lần.</div></div>' +
         '</div>' +
         '<button class="btn ' + (soundOn ? 'btn-ghost' : 'btn-brand') + '" id="kSoundToggle">' + (soundOn ? 'Tắt âm thanh' : 'Bật âm thanh') + '</button>' +
+        '<button class="btn btn-ghost" id="kReadPending">' + IC.chef.replace('class="ic"', 'width="16" height="16"') + ' Đọc món đang chờ</button>' +
         '<button class="btn btn-brand" id="kSoundTest">' + IC.bell.replace('class="ic"', 'width="16" height="16"') + ' Nghe thử</button>' +
       '</div>';
     }
@@ -716,6 +754,7 @@
         toast(soundOn ? 'Đã BẬT âm thanh báo đơn cho bếp' : 'Đã TẮT âm thanh báo đơn cho bếp');
       });
       const s = $('#kSoundTest'); if(s) s.addEventListener('click', testSound);
+      const rp = $('#kReadPending'); if(rp) rp.addEventListener('click', () => readPending(false));
     }
     function newOrderBanner(){
       if(!newFlash) return '';
